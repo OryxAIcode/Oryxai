@@ -1,0 +1,443 @@
+# OryxAI Tier-0 catastrophic-only block list
+#
+# REVIEW REQUIRED before editing this file. Every rule here is something
+# we promise to BLOCK at the hook layer, before the agent's tool call
+# executes. False positives in this file directly damage developer
+# trust and recreate the v1 "OryxAI breaks my agent" failure mode.
+#
+# Inclusion criteria — every rule must meet ALL three:
+#
+#   1. Pure pattern match: no context lookup, no network call, no
+#      session state. Must be decidable in < 1 ms from the command
+#      string alone.
+#   2. Universally catastrophic: every OryxAI tenant agrees this should
+#      block, no org-specific tuning needed. Org-specific policy lives
+#      in the tier-1 bundle, not here.
+#   3. No plausible false positive: there must be no legitimate
+#      developer workflow that legitimately matches this rule. If you
+#      can name one such workflow, move the rule to tier-1.
+#
+# Anti-bloat principle: this file should stay short (currently 12
+# rules). Every addition needs a written justification including the
+# concrete dev-workflow check, plus a regression test added to
+# cmd/oryxai-hook/tier0/rules_test.go before merge.
+#
+# Override mechanism: a user who genuinely needs to run a blocked
+# command can disable tier-0 entirely with `oryxai-init mode --off`.
+# Sidecar continues to observe (tier-1, tier-2 still active); nothing
+# is silently allowed without an explicit operator choice.
+#
+# Matcher semantics:
+#   - `binary`: matched after shell environment-variable prefixes are
+#     stripped (e.g. `FOO=bar rm -rf /` matches binary=rm).
+#   - `flags_all_of`: every listed canonical flag must be present.
+#     Short flags are canonicalized: -rf, -fr, -fR, -Rf, -r -f all
+#     collapse to {recursive, force}. Long flags are normalized to
+#     their short equivalents from the binary's man-page (e.g.
+#     --recursive → recursive).
+#   - `targets_any_of`: at least one of the listed targets must match
+#     a positional argument. Tilde and $HOME are expanded; multiple
+#     slashes collapsed; trailing ./ stripped.
+#   - `tool`: when set, the rule applies to a specific agent tool name
+#     (e.g. Write, Edit). When unset, the rule is shell-command-based
+#     and matches when the agent's tool is Bash/Shell/Exec.
+
+schema_version: 1
+
+rules:
+
+  # ─────────────────────────────────────────────────────────────────
+  # FILESYSTEM ROOT / HOME DESTRUCTION
+  # ─────────────────────────────────────────────────────────────────
+
+  - id: rm-rf-root
+    binary: rm
+    flags_all_of: [recursive, force]
+    targets_any_of:
+      - "/"
+      - "/*"
+      - "$HOME"
+      - "$HOME/*"
+      - "~"
+      - "~/*"
+    reason: "Recursive destructive removal targeting filesystem root or user home directory."
+    justification: |
+      No legitimate developer workflow recursively deletes / or $HOME.
+      Cleaning specific subtrees uses `rm -rf path/to/dir`, not the
+      root. GNU rm itself refuses `rm -rf /` without
+      --no-preserve-root — bypassing that safety is always intentional
+      destruction.
+    examples:
+      blocked:
+        - "rm -rf /"
+        - "rm -fr /"
+        - "rm --recursive --force /"
+        - "rm -rf $HOME"
+        - "rm -rf ~"
+        - "rm -rf /*"
+      allowed:
+        - "rm -rf node_modules/"
+        - "rm -rf /tmp/build-output"
+        - "rm -rf ./dist"
+        - "rm -rf $HOME/build/output"
+
+  - id: rm-rf-system-dirs
+    binary: rm
+    flags_all_of: [recursive, force]
+    targets_any_of:
+      - "/etc"
+      - "/etc/*"
+      - "/var"
+      - "/var/*"
+      - "/usr"
+      - "/usr/*"
+      - "/bin"
+      - "/sbin"
+      - "/boot"
+      - "/lib"
+      - "/lib64"
+      - "/System"     # macOS
+      - "/System/*"
+    reason: "Recursive destructive removal of OS-managed system directories."
+    justification: |
+      /etc /var /usr /bin /sbin /boot /lib are owned by the operating
+      system or package manager. No developer workflow ever deletes
+      these recursively; doing so almost always renders the host
+      unbootable or unusable.
+    examples:
+      blocked:
+        - "rm -rf /etc"
+        - "rm -fr /usr/local"   # subtree of /usr — captured by /usr/* pattern
+        - "rm --recursive --force /var"
+      allowed:
+        - "rm -rf /tmp/build"   # /tmp not in this rule (handled by tier-1 if at all)
+        - "rm -rf /workspace/foo"
+
+  - id: rm-no-preserve-root
+    binary: rm
+    flags_all_of: [no-preserve-root]
+    reason: "Explicit use of --no-preserve-root indicates intent to bypass GNU rm's root protection."
+    justification: |
+      --no-preserve-root has no legitimate development use. It exists
+      solely to allow `rm -rf /` to proceed. Presence of this flag,
+      regardless of target, signals deliberate destructive intent.
+    examples:
+      blocked:
+        - "rm -rf --no-preserve-root /"
+        - "rm --no-preserve-root -rf /tmp"   # blocked even on /tmp — the flag itself is the signal
+      allowed: []   # there is no legitimate use
+
+  # ─────────────────────────────────────────────────────────────────
+  # CRITICAL SYSTEM FILE WRITES
+  # ─────────────────────────────────────────────────────────────────
+
+  - id: write-to-shadow
+    # Two surfaces: agent's Write tool with target_path = /etc/shadow,
+    # OR Bash redirect `>` / `>>` / `tee` to /etc/shadow.
+    any_of:
+      - tool: Write
+        target_path: "/etc/shadow"
+      - tool: Edit
+        target_path: "/etc/shadow"
+      - binary: tee
+        targets_any_of: ["/etc/shadow"]
+      - shell_redirect:
+          target: "/etc/shadow"
+    reason: "Writing to /etc/shadow modifies password hashes — privilege escalation primitive."
+    justification: |
+      /etc/shadow holds password hashes. Direct writes from a coding
+      agent are never a legitimate workflow — password changes go
+      through `passwd`(1) which writes the file atomically with
+      correct perms and locking. Any direct write is either malicious
+      or destructive.
+    examples:
+      blocked:
+        - "echo 'root:$1$xx$xx:0:0:99999:7:::' > /etc/shadow"
+        - "tee /etc/shadow < newhashes"
+        - "{tool: Write, path: /etc/shadow}"
+      allowed:
+        - "passwd alice"        # uses the passwd binary, not direct write
+
+  - id: write-to-sudoers
+    any_of:
+      - tool: Write
+        target_path: "/etc/sudoers"
+      - tool: Edit
+        target_path: "/etc/sudoers"
+      - binary: tee
+        targets_any_of: ["/etc/sudoers", "/etc/sudoers.d"]
+      - shell_redirect:
+          target_glob: "/etc/sudoers*"
+    reason: "/etc/sudoers must be modified via visudo(8); direct writes risk syntax errors that lock the host."
+    justification: |
+      sudoers is the only file on a Linux/Mac system where a syntax
+      error renders the host unrecoverable (no sudo, no privilege
+      elevation). visudo(8) validates before commit. No coding agent
+      should be writing to it directly. (Adding files under
+      /etc/sudoers.d/ from infrastructure tools is a real workflow
+      but those use config-management like Ansible/Chef — not an
+      interactive shell from a coding agent.)
+    examples:
+      blocked:
+        - "echo 'user ALL=(ALL) NOPASSWD:ALL' | tee -a /etc/sudoers"
+        - "{tool: Edit, path: /etc/sudoers}"
+        - "echo X >> /etc/sudoers.d/99-mine"
+      allowed:
+        - "visudo"     # uses the validation tool
+        - "visudo -f /etc/sudoers.d/99-mine"
+
+  - id: write-to-passwd
+    any_of:
+      - tool: Write
+        target_path: "/etc/passwd"
+      - tool: Edit
+        target_path: "/etc/passwd"
+      - binary: tee
+        targets_any_of: ["/etc/passwd"]
+      - shell_redirect:
+          target: "/etc/passwd"
+    reason: "Direct edits to /etc/passwd risk corrupting account database; legitimate edits use useradd(8)/usermod(8)."
+    justification: |
+      useradd / usermod / chsh / passwd are the supported tools for
+      modifying /etc/passwd; they atomically rewrite the file with
+      correct locking. Direct writes from a coding agent are not a
+      legitimate workflow.
+    examples:
+      blocked:
+        - "echo 'attacker::0:0::/root:/bin/sh' >> /etc/passwd"
+      allowed:
+        - "useradd -m alice"
+        - "usermod -aG docker alice"
+
+  # ─────────────────────────────────────────────────────────────────
+  # BLOCK DEVICE DESTRUCTION
+  # ─────────────────────────────────────────────────────────────────
+
+  - id: dd-to-disk-device
+    binary: dd
+    arg_patterns_any_of:
+      - "of=/dev/sd*"
+      - "of=/dev/nvme*"
+      - "of=/dev/hd*"
+      - "of=/dev/vd*"
+      - "of=/dev/xvd*"
+      - "of=/dev/disk*"   # macOS raw disk paths
+    reason: "dd write to a raw block device irrecoverably overwrites disk contents."
+    justification: |
+      `dd of=/dev/sdX` is the canonical disk-imaging command. It bypasses
+      the filesystem entirely. There is no legitimate development
+      workflow (i.e. one that happens inside a coding session, not
+      a deliberate ops procedure) that writes to a raw disk device.
+      Legitimate disk operations (installing OS, imaging) are run from
+      a recovery environment or by an operator who has explicitly
+      disabled the coding agent.
+    examples:
+      blocked:
+        - "dd if=image.iso of=/dev/sda bs=4M"
+        - "dd of=/dev/nvme0n1 < image.bin"
+      allowed:
+        - "dd if=/dev/zero of=/tmp/scratch bs=1M count=100"   # writing to a regular file is fine
+
+  - id: wipefs-disk
+    binary: wipefs
+    flags_all_of: [all]
+    arg_patterns_any_of:
+      - "/dev/sd*"
+      - "/dev/nvme*"
+      - "/dev/hd*"
+      - "/dev/disk*"
+    reason: "wipefs --all erases filesystem signatures from a block device."
+    justification: |
+      wipefs strips filesystem identification headers, making partition
+      contents unrecoverable. Like dd-to-disk-device, this is never a
+      step in normal development; it belongs to imaging/recovery.
+    examples:
+      blocked:
+        - "wipefs --all /dev/sdb"
+      allowed:
+        - "wipefs /dev/loop0"      # without --all, wipefs only prints info
+        - "wipefs --help"
+
+  - id: mkfs-on-raw-disk
+    binary_pattern: "mkfs.*"   # mkfs.ext4, mkfs.xfs, mkfs.btrfs, mkfs.vfat, …
+    arg_patterns_any_of:
+      - "/dev/sda"
+      - "/dev/sdb"
+      - "/dev/sdc"
+      - "/dev/sdd"
+      - "/dev/sde"
+      - "/dev/sdf"
+      - "/dev/sdg"
+      - "/dev/sdh"
+      - "/dev/nvme0n1"
+      - "/dev/nvme1n1"
+    reason: "Creating a filesystem on a raw whole-disk device destroys any existing partition table and data."
+    justification: |
+      mkfs on a partition (e.g. /dev/sda1) is sometimes legitimate. But
+      mkfs on a *raw whole disk* (/dev/sda without partition suffix)
+      destroys the partition table itself and is almost always a
+      mistake or a deliberate destructive act. This rule deliberately
+      targets only the whole-disk path; partition mkfs goes to tier-1.
+    examples:
+      blocked:
+        - "mkfs.ext4 /dev/sda"
+        - "mkfs.xfs /dev/nvme0n1"
+      allowed:
+        - "mkfs.ext4 /dev/sda1"         # partition, not whole disk
+        - "mkfs.ext4 /dev/mapper/foo"   # LVM volume, intentional setup
+
+  # ─────────────────────────────────────────────────────────────────
+  # PRIVILEGE ESCALATION
+  # ─────────────────────────────────────────────────────────────────
+
+  - id: chmod-suid-shell
+    binary: chmod
+    # Match either symbolic +s on shell binaries OR octal mode starting
+    # with 4 (setuid), 2 (setgid), 6 (both) when applied to shells.
+    suid_or_sgid: true
+    targets_any_of:
+      - "/bin/sh"
+      - "/bin/bash"
+      - "/bin/zsh"
+      - "/bin/dash"
+      - "/bin/ksh"
+      - "/usr/bin/sh"
+      - "/usr/bin/bash"
+      - "/usr/bin/zsh"
+      - "/usr/local/bin/bash"
+    reason: "Setting SUID/SGID on a shell binary is the canonical privilege-escalation primitive."
+    justification: |
+      Setting SUID on /bin/bash (etc.) gives any user who runs it the
+      effective UID of the file's owner. If the owner is root, that's
+      a one-shot privilege escalation. No legitimate development
+      workflow modifies the permissions of system shell binaries.
+    examples:
+      blocked:
+        - "chmod +s /bin/bash"
+        - "chmod 4755 /bin/sh"
+        - "chmod u+s /usr/bin/zsh"
+      allowed:
+        - "chmod +x ./build.sh"            # not SUID, not a shell binary
+        - "chmod 644 ~/work/config.yml"
+
+  # ─────────────────────────────────────────────────────────────────
+  # RESOURCE EXHAUSTION
+  # ─────────────────────────────────────────────────────────────────
+
+  - id: fork-bomb-literal
+    # Matches the canonical bash fork bomb in either spaced or
+    # compact form. Pattern is deliberately narrow — generic
+    # "function-calls-itself" patterns are noisy in real code and
+    # belong in tier-1 if anywhere.
+    raw_command_patterns_any_of:
+      - ":(){:|:&};:"
+      - ":() { :|:& };:"
+      - ":(){ :|:& };:"
+      - ":() { : | : & } ; :"
+    reason: "Recognized bash fork bomb that exhausts process table."
+    justification: |
+      The `:(){:|:&};:` pattern is a well-known DoS technique with no
+      use outside of demonstration / pranking. It defines a function
+      named `:` that recursively calls itself piped to a backgrounded
+      copy, exhausting the process table within seconds. Match is
+      string-pattern only to avoid catching legitimate functions
+      named `:`.
+    examples:
+      blocked:
+        - ":(){:|:&};:"
+        - ":() { :|:& };:"
+      allowed:
+        - "function foo() { foo; }"   # recursive function, not the literal pattern
+        - "echo ':()'"                # printing the string is fine
+
+# ─────────────────────────────────────────────────────────────────
+# RULES DELIBERATELY EXCLUDED FROM TIER-0
+# (kept here so reviewers can see what we considered and why we
+# rejected each — not auto-loaded)
+# ─────────────────────────────────────────────────────────────────
+
+deliberately_excluded:
+
+  - id: rm-rf-tmp
+    reason_for_exclusion: |
+      Cleaning /tmp is a real workflow (test setup teardown,
+      cache reset). Surfaced as tier-1 finding if at all.
+
+  - id: curl-pipe-to-bash
+    pattern: "curl ... | bash"
+    reason_for_exclusion: |
+      Every install.sh on the internet uses this pattern. Blocking
+      would break legitimate installation flows (homebrew, rustup,
+      nvm, deno, …). Surface as tier-1 finding so users see it but
+      flow continues.
+
+  - id: read-ssh-private-key
+    pattern: "cat ~/.ssh/id_*"
+    reason_for_exclusion: |
+      ssh-add, git operations, and ssh-copy-id all legitimately read
+      private key files indirectly. Direct cat is suspicious but not
+      universally bad. Tier-1.
+
+  - id: kubectl-prod-delete
+    reason_for_exclusion: |
+      "Prod" is org-specific. Belongs in the org's tier-1 bundle with
+      org-specific cluster-name patterns.
+
+  - id: drop-table
+    reason_for_exclusion: |
+      Schema drops are sometimes legitimate (test setup, migration
+      rollback). Blocking unconditionally would break test suites.
+      Tier-1 with database-name allowlist.
+
+  - id: chmod-777
+    reason_for_exclusion: |
+      `chmod -R 777 .` on a project directory is bad practice but
+      not catastrophic. False positives include legitimate
+      "make this writable for everyone in the team" workflows.
+      Tier-1.
+
+  - id: dd-of-zero-large
+    pattern: "dd if=/dev/zero of=... bs=1G count=1000"
+    reason_for_exclusion: |
+      Filling disk with zeros is a real test for storage performance
+      benchmarks. Pattern hard to distinguish from legitimate.
+      Tier-1.
+
+  - id: outbound-to-unknown-host
+    reason_for_exclusion: |
+      Requires per-org allowlist and runtime network context. Belongs
+      in tier-1 bundle, fed from the org's allowed-domains list.
+
+# ─────────────────────────────────────────────────────────────────
+# COVERAGE TESTS (high-level — actual regression suite lives in
+# cmd/oryxai-hook/tier0/rules_test.go)
+# ─────────────────────────────────────────────────────────────────
+
+test_plan:
+
+  # Each rule above must have a test of the form:
+  #
+  # 1. EVERY example in `examples.blocked` returns block=true.
+  # 2. EVERY example in `examples.allowed` returns block=false.
+  # 3. Equivalence cases must match: -rf / -fr / -fR / -Rf /
+  #    --recursive --force / -r -f all canonicalize to the same set.
+  # 4. Spacing cases must match: `rm  -rf  /` (double space),
+  #    `rm\t-rf\t/` (tab), `rm -rf  /` etc.
+  # 5. Quoting cases: `"rm" -rf /` ≡ `rm -rf /`.
+  # 6. Environment prefix: `FOO=bar rm -rf /` matches binary=rm.
+  # 7. Path canonicalization: `/etc//shadow` ≡ `/etc/shadow`,
+  #    `/etc/./shadow` ≡ `/etc/shadow`.
+  # 8. Tilde expansion: `~/work/file` expanded with HOME=/Users/x
+  #    becomes `/Users/x/work/file`. `~` literal alone is the home dir.
+  # 9. Targets in quotes: `rm -rf '/'` ≡ `rm -rf /`.
+  #
+  # Negative tests (rules MUST NOT fire on):
+  #   - rm -rf /tmp                     (not in our list)
+  #   - rm -rf ./node_modules           (relative path)
+  #   - mkfs.ext4 /dev/sda1             (partition, not raw disk)
+  #   - chmod 755 /bin/bash             (no SUID)
+  #   - dd if=/dev/zero of=/tmp/scratch (target is regular file)
+
+# Fuzzer guidance: cmd/oryxai-hook/tier0/fuzz_test.go runs random
+# command strings through the matcher to catch unintended matches.
+# Mandatory before any rule addition.
