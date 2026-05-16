@@ -9,6 +9,8 @@ import (
 	"strings"
 	"time"
 
+	"golang.org/x/term"
+
 	"github.com/OryxAIcode/Oryxai/cmd/oryxai/internal/client"
 	"github.com/OryxAIcode/Oryxai/cmd/oryxai/internal/keystore"
 	"github.com/OryxAIcode/Oryxai/cmd/oryxai/internal/recipes"
@@ -35,6 +37,7 @@ func Install(args []string) int {
 	mcpURL := fs.String("mcp-url", "", "Server-side MCP URL (derived from control-url if empty)")
 	withHook := fs.Bool("with-hook", false, "Install PreToolUse hooks for tool-call-level visibility")
 	dryRun := fs.Bool("dry-run", false, "Print planned changes; write nothing")
+	projectDir := fs.String("project-dir", "", "Where rule-file recipes (Windsurf, Kilo, Codex, Antigravity, Copilot CLI) drop advisory .md files. Default: $PWD. Refuses world-writable or symlinked dirs.")
 	var agents stringSliceFlag
 	fs.Var(&agents, "agent", "Install only the named agent (repeatable); default: all detected")
 	if err := fs.Parse(args); err != nil {
@@ -142,13 +145,33 @@ func Install(args []string) int {
 		}
 	}
 
-	// 5. Install each.
+	// 5. Resolve + validate project dir (only matters for rule-file
+	// recipes — Windsurf, Kilo, Codex, etc. — but we validate
+	// universally to keep the install summary deterministic).
+	pdir := strings.TrimSpace(*projectDir)
+	if pdir == "" {
+		var werr error
+		pdir, werr = os.Getwd()
+		if werr != nil {
+			printErr("could not resolve current dir; pass --project-dir: %v", werr)
+			return 1
+		}
+	}
+	if err := recipes.ValidateProjectDir(pdir); err != nil {
+		printErr("%v", err)
+		fmt.Fprintln(os.Stderr, "  Rule-file recipes (Windsurf, Kilo, Codex, Antigravity, Copilot CLI) write into the project directory.")
+		fmt.Fprintln(os.Stderr, "  Re-run from a directory you own, or pass --project-dir /safe/path.")
+		return 1
+	}
+
+	// 6. Install each.
 	ictx := recipes.InstallContext{
 		Cfg:        cfg,
 		WithHook:   *withHook,
 		HookPath:   hookPath,
 		BackupsDir: backupsDir,
 		DryRun:     *dryRun,
+		ProjectDir: pdir,
 	}
 	failures := 0
 	fmt.Println()
@@ -213,12 +236,24 @@ func promptLine(prompt string) (string, error) {
 }
 
 func promptSecret(prompt string) (string, error) {
-	// We don't import golang.org/x/term to keep the binary
-	// dependency-free. Without it, we can't disable echo cleanly on
-	// every shell — accept echoed input; user can re-paste if they
-	// don't want history capture (most modern terminals don't capture
-	// stdin into history anyway).
-	return promptLine(prompt)
+	fmt.Fprint(os.Stderr, prompt)
+	// Disable terminal echo while the API key is typed so it doesn't
+	// land in tmux scrollback, the shell's stdin-echo history, or any
+	// screen recording. term.ReadPassword does the right ioctl on
+	// macOS/Linux and the equivalent SetConsoleMode on Windows.
+	// Non-terminal stdin (e.g. piped from --headless setup script)
+	// falls back to plain readline with an explicit notice.
+	fd := int(os.Stdin.Fd())
+	if !term.IsTerminal(fd) {
+		fmt.Fprintln(os.Stderr, "  (stdin not a tty — input will be echoed)")
+		return promptLine("")
+	}
+	buf, err := term.ReadPassword(fd)
+	fmt.Fprintln(os.Stderr) // line break after silent input
+	if err != nil {
+		return "", err
+	}
+	return strings.TrimSpace(string(buf)), nil
 }
 
 func truncate(s string, n int) string {

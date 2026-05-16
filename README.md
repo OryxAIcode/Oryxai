@@ -99,6 +99,35 @@ Customers running self-hosted deployments use Docker images
 (`ghcr.io/oryxai/codesec:tag`) — source access is governed by
 commercial license.
 
+## Security considerations
+
+Things worth knowing if you run this binary or read its source:
+
+- **API key prompt.** `oryxai install` reads your API key via terminal
+  echo-off (`golang.org/x/term`). If stdin isn't a tty (piped from
+  `--headless` setup), input falls back to echoed read — never pipe a
+  plaintext key from shell history.
+- **Local trust boundary.** The buffered hook events live in
+  `~/.oryxai/buffer.jsonl` mode 0600. Anyone on the same OS user as
+  you can read recent tool-call summaries from that file. This is the
+  same trust boundary as your `.bash_history`.
+- **Symlink defense.** Recipe writers refuse to follow symlinks at
+  their target paths. A pre-planted symlink (`~/.claude/settings.json`
+  → `/etc/passwd`) makes the recipe error out instead of writing
+  through.
+- **Project-directory recipes.** Windsurf, Kilo Code, Codex,
+  Antigravity, and Copilot CLI drop advisory markdown into the
+  current project directory. Refuses world-writable directories
+  (so `/tmp` and friends are rejected). Pass `--project-dir` to
+  pick a different path.
+- **No blocking.** The hook never refuses an agent's tool call. It
+  observes and reports. Catastrophic patterns are surfaced in the
+  dashboard but not blocked locally.
+- **install.sh.** The shell installer verifies SHA256 against the
+  release's `SHA256SUMS` file by default. `ORYXAI_NO_VERIFY=1` skips
+  verification — don't set this. Cosign signature verification is
+  available manually via the docs.
+
 ## License
 
 [MIT](./LICENSE) — see the file for the full text.

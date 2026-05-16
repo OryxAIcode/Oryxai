@@ -128,7 +128,7 @@ func (WindsurfRecipe) Install(ctx InstallContext) error {
 	// Windsurf rules are project-scoped. We write to CWD/.windsurfrules
 	// rather than home, which is correct for a project-aware install
 	// (user is in a project when they run `oryxai install`).
-	cwd, err := os.Getwd()
+	cwd, err := projectDirOrCwd(ctx)
 	if err != nil {
 		return err
 	}
@@ -159,7 +159,7 @@ func (KiloRecipe) Detect() error {
 	return ErrNotInstalled
 }
 func (KiloRecipe) Install(ctx InstallContext) error {
-	cwd, err := os.Getwd()
+	cwd, err := projectDirOrCwd(ctx)
 	if err != nil {
 		return err
 	}
@@ -188,7 +188,7 @@ func (AntigravityRecipe) Detect() error {
 	return ErrNotInstalled
 }
 func (AntigravityRecipe) Install(ctx InstallContext) error {
-	cwd, err := os.Getwd()
+	cwd, err := projectDirOrCwd(ctx)
 	if err != nil {
 		return err
 	}
@@ -213,7 +213,9 @@ func (CodexRecipe) Mode() Mode          { return ModeAdvisory }
 func (CodexRecipe) Detect() error {
 	// Codex CLI is distributed via npm (@openai/codex). We look for
 	// presence of an AGENTS.md in CWD as a soft signal that the user
-	// is already on the Codex flow.
+	// is already on the Codex flow. Detect runs without an
+	// InstallContext so we fall back to CWD — read-only is safe even
+	// in untrusted dirs.
 	cwd, _ := os.Getwd()
 	if FileExists(filepath.Join(cwd, "AGENTS.md")) {
 		return nil
@@ -225,7 +227,7 @@ func (CodexRecipe) Detect() error {
 // AGENTS.md. Per-agent markers (not the shared oryxaiRulesMarker) let
 // us uninstall one without breaking the other.
 func installAGENTSInclude(ctx InstallContext, agentTag string) error {
-	cwd, err := os.Getwd()
+	cwd, err := projectDirOrCwd(ctx)
 	if err != nil {
 		return err
 	}
