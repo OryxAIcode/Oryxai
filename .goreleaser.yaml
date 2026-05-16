@@ -72,7 +72,12 @@ release:
   github:
     owner: OryxAIcode
     name: Oryxai
-  draft: true
+  # draft was true initially — manual publish requires Releases UI
+  # access which is awkward when multiple GitHub accounts are involved.
+  # Flipped to false so tag-push → live release in one step. The
+  # workflow only fires on protected v* tags, so accidental publishing
+  # is gated upstream at the tag-creation step.
+  draft: false
   prerelease: auto
   name_template: "{{ .ProjectName }} {{ .Version }}"
   header: |
