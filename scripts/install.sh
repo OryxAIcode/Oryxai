@@ -11,10 +11,19 @@
 #   curl -fsSL https://oryxai.dev/install | sh
 #
 # Environment overrides:
-#   ORYXAI_BIN_DIR=/path        install location (default: /usr/local/bin)
+#   ORYXAI_BIN_DIR=/path        install location (default: auto-detected)
+#   ORYXAI_USE_SUDO=1           allow sudo fallback when no writable dir found
 #   ORYXAI_VERSION=v0.1.2       pin a specific version (default: latest)
 #   ORYXAI_REPO=OryxAIcode/Oryxai  override the GitHub repo
 #   ORYXAI_NO_VERIFY=1          skip SHA256 verification (NOT RECOMMENDED)
+#
+# Install location resolution (in order):
+#   1. $ORYXAI_BIN_DIR if set
+#   2. /usr/local/bin if writable without sudo
+#   3. $HOME/.local/bin (created if missing) — POSIX user-bin convention
+#
+# Sudo is NEVER used unless ORYXAI_USE_SUDO=1 is explicitly set. We've
+# seen too many users mistake the sudo prompt for an API-key prompt.
 #
 # Security notes:
 #   - The script is short and reviewable. Read it before piping to sh.
@@ -28,9 +37,20 @@ set -eu
 
 # ---- inputs / defaults --------------------------------------------------
 
-BIN_DIR="${ORYXAI_BIN_DIR:-/usr/local/bin}"
 REPO="${ORYXAI_REPO:-OryxAIcode/Oryxai}"
 VERSION="${ORYXAI_VERSION:-latest}"
+
+# Resolve BIN_DIR. Order: explicit override → writable /usr/local/bin →
+# ~/.local/bin. We intentionally do NOT auto-sudo: users typing their
+# API key into a sudo prompt is the most common confused-UX failure
+# mode we've seen.
+if [ -n "${ORYXAI_BIN_DIR:-}" ]; then
+  BIN_DIR="$ORYXAI_BIN_DIR"
+elif [ -w /usr/local/bin ]; then
+  BIN_DIR="/usr/local/bin"
+else
+  BIN_DIR="$HOME/.local/bin"
+fi
 
 # ---- OS / arch detection ------------------------------------------------
 
@@ -122,17 +142,43 @@ fi
 
 tar -xzf "$TMPDIR_PATH/$ARCHIVE" -C "$TMPDIR_PATH" oryxai
 
-# ---- install (sudo only if BIN_DIR not writable) -----------------------
+# ---- install -----------------------------------------------------------
+# Try BIN_DIR. If it's not writable, create it (for $HOME/.local/bin).
+# Only fall back to sudo when the user explicitly opted in with
+# ORYXAI_USE_SUDO=1 — we'd rather print a clear next-step than ask for
+# a password the user wasn't expecting.
+
+mkdir -p "$BIN_DIR" 2>/dev/null || true
 
 if [ -w "$BIN_DIR" ]; then
   install -m 0755 "$TMPDIR_PATH/oryxai" "$BIN_DIR/oryxai"
-else
-  echo "→ $BIN_DIR not writable; using sudo"
+elif [ "${ORYXAI_USE_SUDO:-0}" = "1" ]; then
+  echo "→ $BIN_DIR not writable; using sudo (ORYXAI_USE_SUDO=1)"
   sudo install -m 0755 "$TMPDIR_PATH/oryxai" "$BIN_DIR/oryxai"
+else
+  echo "oryxai install: $BIN_DIR is not writable." >&2
+  echo "  Either re-run with ORYXAI_BIN_DIR=\$HOME/.local/bin," >&2
+  echo "  or with ORYXAI_USE_SUDO=1 to allow sudo." >&2
+  exit 1
 fi
 
 echo
 echo "✓ Installed $BIN_DIR/oryxai"
 "$BIN_DIR/oryxai" version
+
+# PATH hint when we land in $HOME/.local/bin and the user doesn't yet
+# have it on PATH. Skip in non-interactive shells where setting up
+# shell rc files would be presumptuous.
+case ":$PATH:" in
+  *":$BIN_DIR:"*) ;;  # already on PATH
+  *)
+    echo
+    echo "⚠ $BIN_DIR is not on your PATH yet."
+    echo "  Add this to your shell rc (~/.zshrc or ~/.bashrc):"
+    echo "      export PATH=\"$BIN_DIR:\$PATH\""
+    echo "  Then open a new terminal, or run:  export PATH=\"$BIN_DIR:\$PATH\""
+    ;;
+esac
+
 echo
-echo "Next: run \`oryxai install\` and paste your API key from oryxai.dev"
+echo "Next: run \`oryxai install\` and paste your API key from https://oryxai.dev/keys"

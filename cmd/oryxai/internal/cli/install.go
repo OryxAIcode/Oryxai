@@ -6,8 +6,10 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"regexp"
 	"strings"
 	"time"
+	"unicode"
 
 	"golang.org/x/term"
 
@@ -16,16 +18,47 @@ import (
 	"github.com/OryxAIcode/Oryxai/cmd/oryxai/internal/recipes"
 )
 
+// slugRe matches the same shape the control plane's normalizeSlug
+// produces: lowercase alphanumerics + dashes, 3–48 chars, can't start
+// or end with a dash. We re-check on the client even though the
+// server already validates — defense in depth so a compromised or
+// buggy control plane can't smuggle path-segment metacharacters
+// (e.g. ".." or "/") into the URL we POST to.
+//
+// Length math: leading [a-z0-9] (1) + middle [a-z0-9-]{1,46} (1–46) +
+// trailing [a-z0-9] (1) = 3–48 chars total.
+var slugRe = regexp.MustCompile(`^[a-z0-9][a-z0-9-]{1,46}[a-z0-9]$`)
+
+// sanitizeForTerminal strips control characters (incl. ANSI CSI/OSC
+// sequences) from a string before printing. Defensive against an
+// upstream that managed to land newlines/escapes in display names —
+// terminal hijack is cheap to block and the legitimate values are
+// strict ASCII.
+func sanitizeForTerminal(s string) string {
+	b := make([]rune, 0, len(s))
+	for _, r := range s {
+		if unicode.IsControl(r) || r == 0x7f {
+			continue
+		}
+		b = append(b, r)
+	}
+	return string(b)
+}
+
 // Install handles `oryxai install [flags]`.
 //
 // Flow:
 //
-//  1. Parse flags. Fall back to interactive prompts for missing values.
-//  2. Verify the API key + slug combination with the control plane.
-//  3. Write ~/.oryxai/config.
-//  4. Detect installed agents (or use --agent list).
-//  5. For each: run recipe.Install with a backup pass.
-//  6. Print a summary.
+//  1. Parse flags. Prompt for the API key if --api-key isn't set.
+//  2. Resolve the workspace slug via /api/v1/key/whoami (bearer auth).
+//     Fall back to an interactive prompt only when the control plane
+//     is too old to ship the endpoint, or when --slug was passed.
+//  3. Cross-check (key, slug) against /feed/ingest.
+//  4. Write ~/.oryxai/config.
+//  5. Detect installed agents (or use --agent list).
+//  6. Validate --project-dir for rule-file recipes.
+//  7. Run each recipe with a backup pass.
+//  8. Print a summary.
 //
 // Exits non-zero on validation errors or any recipe failure.
 func Install(args []string) int {
@@ -50,7 +83,7 @@ func Install(args []string) int {
 	key := strings.TrimSpace(*apiKey)
 	if key == "" {
 		var err error
-		key, err = promptSecret(fmt.Sprintf("Paste your OryxAI API key (csk_…) from %s/o/<your-slug>/api-keys: ", resolvedControl))
+		key, err = promptSecret(fmt.Sprintf("Paste your OryxAI API key (csk_…) from %s/keys: ", resolvedControl))
 		if err != nil {
 			printErr("could not read API key: %v", err)
 			return 1
@@ -61,8 +94,50 @@ func Install(args []string) int {
 		return 1
 	}
 
+	// 2. Resolve slug. If the user passed --slug, trust it; otherwise
+	// ask the control plane (Bearer csk_ → org_slug). Falling back to
+	// an interactive prompt only when whoami isn't available keeps the
+	// installer backward-compatible with older control-plane builds.
 	slug := strings.TrimSpace(*orgSlug)
+	if !*dryRun && slug == "" {
+		fmt.Printf("→ Resolving workspace against %s …\n", resolvedControl)
+		probe := client.New(resolvedControl, "", key)
+		whoamiCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		who, werr := probe.WhoamiByKey(whoamiCtx)
+		cancel()
+		switch {
+		case werr == nil:
+			// Defense-in-depth: re-validate the slug shape before
+			// using it in a URL. The control plane normalizes slugs
+			// on insert, so a malformed value here means something
+			// went wrong upstream — better to fail loud than POST
+			// to a tampered path.
+			if !slugRe.MatchString(who.OrgSlug) {
+				printErr("control plane returned a malformed slug %q — refusing to proceed", sanitizeForTerminal(who.OrgSlug))
+				return 1
+			}
+			slug = who.OrgSlug
+			label := sanitizeForTerminal(who.OrgName)
+			if label == "" {
+				label = who.OrgSlug
+			}
+			fmt.Printf("✓ Connecting as %q (%s)\n", label, who.OrgSlug)
+		case client.IsWhoamiUnsupported(werr):
+			fmt.Println("  (older control plane — falling back to slug prompt)")
+			var perr error
+			slug, perr = promptLine("Workspace slug (from your dashboard URL, e.g. 'my-team'): ")
+			if perr != nil {
+				printErr("could not read slug: %v", perr)
+				return 1
+			}
+		default:
+			printErr("%v", werr)
+			return 1
+		}
+	}
 	if slug == "" {
+		// Dry-run with no --slug, or a corner-case empty whoami result —
+		// dry-run still needs *some* slug for the recipe preview, so ask.
 		var err error
 		slug, err = promptLine("Workspace slug (from your dashboard URL, e.g. 'my-team'): ")
 		if err != nil {
@@ -71,11 +146,19 @@ func Install(args []string) int {
 		}
 	}
 
-	// 2. Verify against control plane. Skipped in dry-run because the
-	// whole point of dry-run is to preview without touching anything
-	// external.
+	// Validate slug shape regardless of source (flag, whoami, prompt).
+	// Same charset/length the control plane enforces — keeps URL path
+	// segments clean.
+	slug = strings.ToLower(strings.TrimSpace(slug))
+	if !slugRe.MatchString(slug) {
+		printErr("workspace slug %q is malformed (lowercase letters, digits, dashes; 3–48 chars; no leading/trailing dash)", sanitizeForTerminal(slug))
+		return 1
+	}
+
+	// 3. Cross-check (key, slug) against /feed/ingest. Whoami already
+	// proved the key works; this catches the corner case where the user
+	// passed an explicit --slug that doesn't match the key's org.
 	if !*dryRun {
-		fmt.Printf("→ Verifying API key against %s …\n", resolvedControl)
 		c := client.New(resolvedControl, slug, key)
 		verifyCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
@@ -88,7 +171,7 @@ func Install(args []string) int {
 		fmt.Println("→ Dry-run: skipping API key verification")
 	}
 
-	// 3. Write ~/.oryxai/config.
+	// 4. Write ~/.oryxai/config.
 	cfg := keystore.Config{
 		APIKey:      key,
 		OrgSlug:     slug,
@@ -106,7 +189,7 @@ func Install(args []string) int {
 		fmt.Printf("✓ Wrote %s\n", p)
 	}
 
-	// 4. Decide which agents to install.
+	// 5. Decide which agents to install.
 	hookPath, _ := os.Executable()
 	backupsDir, err := keystore.BackupsDir()
 	if err != nil {
@@ -145,7 +228,7 @@ func Install(args []string) int {
 		}
 	}
 
-	// 5. Resolve + validate project dir (only matters for rule-file
+	// 6. Resolve + validate project dir (only matters for rule-file
 	// recipes — Windsurf, Kilo, Codex, etc. — but we validate
 	// universally to keep the install summary deterministic).
 	pdir := strings.TrimSpace(*projectDir)
@@ -164,7 +247,7 @@ func Install(args []string) int {
 		return 1
 	}
 
-	// 6. Install each.
+	// 7. Install each.
 	ictx := recipes.InstallContext{
 		Cfg:        cfg,
 		WithHook:   *withHook,
@@ -191,7 +274,7 @@ func Install(args []string) int {
 		fmt.Printf("  ✓ %s   %s\n", r.DisplayName(), modeBadge)
 	}
 
-	// 6. Summary.
+	// 8. Summary.
 	fmt.Println()
 	if *dryRun {
 		fmt.Println("Dry-run: nothing written.")
