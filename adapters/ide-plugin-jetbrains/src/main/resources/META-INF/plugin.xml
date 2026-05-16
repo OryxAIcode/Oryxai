@@ -1,0 +1,109 @@
+<idea-plugin>
+    <id>dev.oryxai.codesec</id>
+    <name>OryxAI — AI Code Security Gateway</name>
+    <vendor email="hello@oryxai.dev" url="https://oryxai.dev">OryxAI</vendor>
+
+    <description><![CDATA[
+    The security gateway for AI coding assistants — JetBrains edition.
+    <br/><br/>
+    <b>Features:</b>
+    <ul>
+        <li>Real-time scanning of every save / paste / completion</li>
+        <li>Claude Code integration — one action rewires ~/.claude/settings.json
+            to route through your CodeSec proxy + MCP server (with backup + atomic write)</li>
+        <li>Browser-mediated sign-in — API key stored in the OS keychain via PasswordSafe,
+            never on disk in IDE settings</li>
+        <li>Activity tool window — live feed of every metered request to your workspace</li>
+        <li>Backdoor pattern catalog, license fingerprinting, secret detection</li>
+    </ul>
+    ]]></description>
+
+    <depends>com.intellij.modules.platform</depends>
+
+    <extensions defaultExtensionNs="com.intellij">
+        <statusBarWidgetFactory
+            id="CodeSecStatusBar"
+            implementation="io.codesec.plugin.CodeSecStatusBarFactory"
+            order="after encodingWidget"/>
+
+        <localInspectionTool
+            implementation="io.codesec.plugin.CodeSecInspection"
+            displayName="CodeSec Security"
+            groupName="CodeSec"
+            enabledByDefault="true"
+            level="WARNING"/>
+
+        <applicationConfigurable
+            instance="io.codesec.plugin.CodeSecConfigurable"
+            id="io.codesec.settings"
+            displayName="CodeSec"
+            parentId="tools"/>
+
+        <applicationService
+            serviceImplementation="io.codesec.plugin.CodeSecSettings"/>
+
+        <notificationGroup
+            id="CodeSec Notifications"
+            displayType="BALLOON"/>
+
+        <!-- Faz B4: Activity tool window — polls /feed and renders rows -->
+        <toolWindow
+            id="CodeSec Activity"
+            secondary="true"
+            anchor="bottom"
+            factoryClass="io.codesec.plugin.ActivityToolWindowFactory"/>
+    </extensions>
+
+    <actions>
+        <group id="CodeSec.Menu" text="CodeSec" popup="true">
+            <add-to-group group-id="ToolsMenu" anchor="last"/>
+
+            <!-- Existing scan actions -->
+            <action id="CodeSec.ScanFile"
+                    class="io.codesec.plugin.actions.ScanFileAction"
+                    text="Scan Current File"
+                    description="Run CodeSec security scan on the current file"/>
+            <action id="CodeSec.ScanSelection"
+                    class="io.codesec.plugin.actions.ScanSelectionAction"
+                    text="Scan Selection"
+                    description="Run CodeSec security scan on selected code"/>
+            <action id="CodeSec.ToggleEnabled"
+                    class="io.codesec.plugin.actions.ToggleEnabledAction"
+                    text="Toggle CodeSec"
+                    description="Enable or disable CodeSec scanning"/>
+
+            <separator/>
+
+            <!-- Faz B4: onboarding -->
+            <action id="CodeSec.StartOnboarding"
+                    class="io.codesec.plugin.actions.StartOnboardingAction"
+                    text="Start Onboarding (connect editor)"
+                    description="Mint a CodeSec API key via the web console and store it in your OS keychain"/>
+            <action id="CodeSec.SignOut"
+                    class="io.codesec.plugin.actions.SignOutAction"
+                    text="Sign Out (forget API key)"
+                    description="Remove the CodeSec API key from your OS keychain"/>
+
+            <separator/>
+
+            <!-- Faz B4: Claude Code integration -->
+            <action id="CodeSec.EnableClaudeCode"
+                    class="io.codesec.plugin.actions.EnableClaudeCodeAction"
+                    text="Enable Claude Code Protection"
+                    description="Atomically rewrite ~/.claude/settings.json so the Anthropic CLI routes through CodeSec proxy + MCP"/>
+            <action id="CodeSec.DisableClaudeCode"
+                    class="io.codesec.plugin.actions.DisableClaudeCodeAction"
+                    text="Disable Claude Code Protection"
+                    description="Restore the pre-CodeSec backup of ~/.claude/settings.json"/>
+            <action id="CodeSec.DiagnoseClaudeCode"
+                    class="io.codesec.plugin.actions.DiagnoseClaudeCodeAction"
+                    text="Diagnose Claude Code Integration"
+                    description="Health-probe proxy / MCP / control plane and report"/>
+        </group>
+    </actions>
+
+    <projectListeners>
+        <listener class="io.codesec.plugin.CodeSecDocumentListener"
+                  topic="com.intellij.openapi.editor.event.BulkAwareDocumentListener"/>
+    </projectListeners>
+</idea-plugin>

@@ -1,0 +1,104 @@
+# GoReleaser config for the public oryxai installer binary.
+# Triggered by .github/workflows/release.yml on `v*` tags.
+
+version: 2
+
+project_name: oryxai
+
+before:
+  hooks:
+    - go mod tidy
+    - go mod download
+
+builds:
+  - id: oryxai
+    main: ./cmd/oryxai
+    binary: oryxai
+    env:
+      - CGO_ENABLED=0
+    goos: [linux, darwin, windows]
+    goarch: [amd64, arm64]
+    ignore:
+      - goos: windows
+        goarch: arm64
+    flags:
+      - -trimpath
+    ldflags:
+      - -s -w
+      - -X github.com/OryxAIcode/Oryxai/internal/version.Version={{.Version}}
+      - -X github.com/OryxAIcode/Oryxai/internal/version.Commit={{.ShortCommit}}
+      - -X github.com/OryxAIcode/Oryxai/internal/version.BuildTime={{.Date}}
+
+archives:
+  - id: oryxai
+    builds:
+      - oryxai
+    # Stable file name without version segment — scripts/install.sh
+    # resolves via /releases/latest/download/<name>, so the name has
+    # to match across versions.
+    name_template: "oryxai_{{ .Os }}_{{ .Arch }}"
+    format_overrides:
+      - goos: windows
+        format: zip
+    format: tar.gz
+    files:
+      - LICENSE
+      - README.md
+
+checksum:
+  name_template: "SHA256SUMS"
+  algorithm: sha256
+
+source:
+  enabled: true
+  name_template: "oryxai_{{ .Version }}_source"
+
+snapshot:
+  version_template: "{{ incpatch .Version }}-snapshot"
+
+changelog:
+  use: github
+  sort: asc
+  filters:
+    exclude:
+      - "^docs:"
+      - "^test:"
+      - "^chore:"
+      - "^ci:"
+      - "Merge pull request"
+      - "Merge branch"
+
+release:
+  github:
+    owner: OryxAIcode
+    name: Oryxai
+  draft: true
+  prerelease: auto
+  name_template: "{{ .ProjectName }} {{ .Version }}"
+  header: |
+    ## oryxai {{ .Version }}
+
+    Local agent installer that wires AI coding tools (Claude Code,
+    Cursor, Cline, Continue, Cody, Codeium, Gemini CLI, OpenCode,
+    OpenClaw, Windsurf, Kilo Code, Antigravity, Codex, Copilot CLI)
+    into the OryxAI security gateway.
+
+    ### Verifying the download
+
+    1. Download the archive for your platform and the matching `SHA256SUMS`.
+    2. Verify the checksum:
+       ```
+       shasum -a 256 -c SHA256SUMS --ignore-missing
+       ```
+    3. Verify the checksum signature (proves the file came from this
+       repo's release workflow):
+       ```
+       cosign verify-blob \
+         --certificate-identity-regexp 'https://github.com/OryxAIcode/Oryxai/.github/workflows/release.yml@.*' \
+         --certificate-oidc-issuer 'https://token.actions.githubusercontent.com' \
+         --signature SHA256SUMS.sig \
+         --certificate SHA256SUMS.pem \
+         SHA256SUMS
+       ```
+
+    See https://oryxai.dev for integration docs.

@@ -1,0 +1,222 @@
+# Tag-triggered release pipeline for the public oryxai binary.
+#
+#   v0.X.Y          → goreleaser: cross-compiled binaries + checksums
+#   vscode-v0.X.Y   → VSCode extension publish (gated on VSCE_PAT)
+#   jetbrains-v0.X.Y → JetBrains plugin publish (gated on JETBRAINS_*)
+#
+# Marketplace + signing jobs are gated on the presence of their
+# respective secrets. When secrets are absent, the job emits a
+# workflow-summary warning instead of failing.
+
+name: release
+
+on:
+  push:
+    tags:
+      - "v*"
+      - "vscode-v*"
+      - "jetbrains-v*"
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  preflight:
+    name: Preflight
+    runs-on: ubuntu-latest
+    if: github.repository == 'OryxAIcode/Oryxai'
+    outputs:
+      kind: ${{ steps.classify.outputs.kind }}
+      version: ${{ steps.classify.outputs.version }}
+    steps:
+      - id: classify
+        env:
+          REF: ${{ github.ref }}
+        run: |
+          set -euo pipefail
+          tag="${REF#refs/tags/}"
+          case "$tag" in
+            vscode-v*)    kind=vscode;    version="${tag#vscode-v}" ;;
+            jetbrains-v*) kind=jetbrains; version="${tag#jetbrains-v}" ;;
+            v*)           kind=server;    version="${tag#v}" ;;
+            *)            echo "unknown tag shape: $tag"; exit 1 ;;
+          esac
+          echo "kind=$kind" >> "$GITHUB_OUTPUT"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "::notice title=Release classified::kind=$kind version=$version"
+
+  goreleaser:
+    name: GoReleaser
+    needs: preflight
+    if: needs.preflight.outputs.kind == 'server'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      id-token: write
+    steps:
+      - uses: actions/checkout@b4ffde65f46336ab88eb53be808477a3936bae11  # v4.1.1
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-go@93397bea11091df50f3d7e59dc26a7711a8ced47  # v4.1.0
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Install cosign
+        uses: sigstore/cosign-installer@1fc5bd396d372bee37d608f955b336615edf79c8  # v3.2.0
+        with:
+          cosign-release: 'v2.2.2'
+
+      - name: Run GoReleaser
+        uses: goreleaser/goreleaser-action@7ec5c2b0c6cdda6e8bbb49444bc797dd33d74dd8  # v5.0.0
+        with:
+          distribution: goreleaser
+          version: "~> v2"
+          args: release --clean
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Sign SHA256SUMS (cosign keyless OIDC)
+        run: |
+          set -euo pipefail
+          cd dist
+          if [ ! -f SHA256SUMS ]; then
+            echo "SHA256SUMS not found" >&2
+            exit 1
+          fi
+          cosign sign-blob --yes \
+            --output-signature   SHA256SUMS.sig \
+            --output-certificate SHA256SUMS.pem \
+            SHA256SUMS
+          gh release upload "${GITHUB_REF##*/}" SHA256SUMS.sig SHA256SUMS.pem --clobber
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  vscode-publish:
+    name: Publish VSCode extension
+    needs: preflight
+    if: needs.preflight.outputs.kind == 'vscode'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@b4ffde65f46336ab88eb53be808477a3936bae11
+
+      - uses: actions/setup-node@1d0ff469b7ec7b3cb9d8673fde0c81c44821de2a
+        with:
+          node-version: '20'
+          cache: 'npm'
+          cache-dependency-path: adapters/ide-plugin-vscode/package-lock.json
+
+      - name: Gate on VSCE_PAT
+        id: gate
+        env:
+          VSCE_PAT: ${{ secrets.VSCE_PAT }}
+        run: |
+          if [ -z "${VSCE_PAT:-}" ]; then
+            echo "::warning title=VSCode publish skipped::VSCE_PAT not set"
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Install + build
+        working-directory: adapters/ide-plugin-vscode
+        run: |
+          npm ci --no-audit --no-fund --ignore-scripts
+          npm run compile
+          version="${GITHUB_REF##*/}"
+          version="${version#vscode-v}"
+          npm version "$version" --no-git-tag-version --allow-same-version
+
+      - name: Package .vsix
+        working-directory: adapters/ide-plugin-vscode
+        run: npx --yes @vscode/vsce package --no-dependencies -o oryxai.vsix
+
+      - name: Upload .vsix to GitHub release
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release create "${GITHUB_REF##*/}" \
+            --title "VSCode extension $(echo "${GITHUB_REF##*/}" | sed 's/^vscode-v//')" \
+            --notes "VSCode / Cursor extension. Marketplace: oryxai.codesec" \
+            --draft \
+            adapters/ide-plugin-vscode/oryxai.vsix \
+          || gh release upload "${GITHUB_REF##*/}" adapters/ide-plugin-vscode/oryxai.vsix --clobber
+
+      - name: Publish to VSCode Marketplace
+        if: steps.gate.outputs.skip == 'false'
+        working-directory: adapters/ide-plugin-vscode
+        env:
+          VSCE_PAT: ${{ secrets.VSCE_PAT }}
+        run: npx --yes @vscode/vsce publish --packagePath oryxai.vsix --pat "$VSCE_PAT"
+
+  jetbrains-publish:
+    name: Publish JetBrains plugin
+    needs: preflight
+    if: needs.preflight.outputs.kind == 'jetbrains'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@b4ffde65f46336ab88eb53be808477a3936bae11
+
+      - uses: actions/setup-java@7a445ee88d4e23b52c33fdc7601e40278616c7f8
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Gate on JETBRAINS_PUBLISH_TOKEN
+        id: gate
+        env:
+          JETBRAINS_PUBLISH_TOKEN: ${{ secrets.JETBRAINS_PUBLISH_TOKEN }}
+        run: |
+          if [ -z "${JETBRAINS_PUBLISH_TOKEN:-}" ]; then
+            echo "::warning title=JetBrains publish skipped::JETBRAINS_PUBLISH_TOKEN not set"
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Patch plugin version from tag
+        working-directory: adapters/ide-plugin-jetbrains
+        run: |
+          version="${GITHUB_REF##*/}"
+          version="${version#jetbrains-v}"
+          sed -i.bak "s/^version = .*/version = \"$version\"/" build.gradle.kts
+          rm build.gradle.kts.bak
+
+      - name: Build + sign + publish
+        if: steps.gate.outputs.skip == 'false'
+        working-directory: adapters/ide-plugin-jetbrains
+        env:
+          PUBLISH_TOKEN:        ${{ secrets.JETBRAINS_PUBLISH_TOKEN }}
+          CERTIFICATE_CHAIN:    ${{ secrets.JETBRAINS_CERTIFICATE_CHAIN }}
+          PRIVATE_KEY:          ${{ secrets.JETBRAINS_PRIVATE_KEY }}
+          PRIVATE_KEY_PASSWORD: ${{ secrets.JETBRAINS_PRIVATE_KEY_PASSWORD }}
+        run: ./gradlew patchPluginXml signPlugin publishPlugin --no-daemon
+
+      - name: Build only (no-publish path for release artifact)
+        if: steps.gate.outputs.skip == 'true'
+        working-directory: adapters/ide-plugin-jetbrains
+        run: ./gradlew buildPlugin --no-daemon
+
+      - name: Upload plugin .zip to GitHub release
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          version="${GITHUB_REF##*/}"
+          version="${version#jetbrains-v}"
+          zip="$(ls adapters/ide-plugin-jetbrains/build/distributions/*.zip | head -1)"
+          gh release create "${GITHUB_REF##*/}" \
+            --title "JetBrains plugin $version" \
+            --notes "Marketplace ID: dev.oryxai.codesec" \
+            --draft \
+            "$zip" \
+          || gh release upload "${GITHUB_REF##*/}" "$zip" --clobber
