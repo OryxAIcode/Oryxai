@@ -1,0 +1,49 @@
+#!/bin/sh
+#
+# Copyright © 2015-2021 the original authors.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#      https://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+#
+##############################################################################
+#
+# Minimal Gradle wrapper bootstrap.
+#
+# This is NOT the upstream gradle/gradle gradlew script — it's a stripped-down
+# launcher that delegates to the gradle binary on PATH or to the wrapper jar
+# at gradle/wrapper/gradle-wrapper.jar (which Gradle will auto-download on
+# first invocation when `gradle wrapper` is run from the project root).
+#
+# Phase 8.1 of AUDIT_REMEDIATION_PLAN. For a vendored wrapper jar, run
+# `gradle wrapper --gradle-version 8.5 --distribution-type bin` once with a
+# system-wide Gradle install, then commit gradle/wrapper/gradle-wrapper.jar.
+#
+##############################################################################
+
+set -e
+
+DIR=$(cd -P "$(dirname "$0")" && pwd)
+WRAPPER_JAR="$DIR/gradle/wrapper/gradle-wrapper.jar"
+
+if [ -f "$WRAPPER_JAR" ]; then
+    exec "${JAVA_HOME:-/usr}/bin/java" -jar "$WRAPPER_JAR" "$@"
+fi
+
+if command -v gradle >/dev/null 2>&1; then
+    echo "wrapper jar missing — falling back to system gradle ($(gradle --version | grep Gradle))" >&2
+    echo "  to vendor the wrapper, run: gradle wrapper --gradle-version 8.5" >&2
+    exec gradle "$@"
+fi
+
+echo "FATAL: no gradle on PATH and no gradle/wrapper/gradle-wrapper.jar." >&2
+echo "Install Gradle (https://gradle.org/install/) and re-run." >&2
+exit 1

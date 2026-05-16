@@ -1,0 +1,62 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  go:
+    name: Go ${{ matrix.go }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+        go: ['1.25']
+    steps:
+      - uses: actions/checkout@b4ffde65f46336ab88eb53be808477a3936bae11
+      - uses: actions/setup-go@93397bea11091df50f3d7e59dc26a7711a8ced47
+        with:
+          go-version: ${{ matrix.go }}
+          cache: true
+      - name: Build
+        run: go build ./...
+      - name: Vet
+        run: go vet ./...
+      - name: Test
+        run: go test -race -count=1 ./...
+
+  jetbrains-plugin:
+    name: JetBrains plugin
+    runs-on: ubuntu-latest
+    if: contains(github.event.head_commit.message, 'jetbrains') || github.event_name == 'pull_request'
+    steps:
+      - uses: actions/checkout@b4ffde65f46336ab88eb53be808477a3936bae11
+      - uses: actions/setup-java@7a445ee88d4e23b52c33fdc7601e40278616c7f8
+        with:
+          distribution: temurin
+          java-version: '17'
+      - name: Build plugin
+        working-directory: adapters/ide-plugin-jetbrains
+        run: ./gradlew buildPlugin --no-daemon
+
+  vscode-extension:
+    name: VSCode extension
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@b4ffde65f46336ab88eb53be808477a3936bae11
+      - uses: actions/setup-node@1d0ff469b7ec7b3cb9d8673fde0c81c44821de2a
+        with:
+          node-version: '20'
+          cache: 'npm'
+          cache-dependency-path: adapters/ide-plugin-vscode/package-lock.json
+      - name: Install + test
+        working-directory: adapters/ide-plugin-vscode
+        run: |
+          npm ci --ignore-scripts || npm install --no-audit --ignore-scripts
+          npm test --if-present
+          npm run compile --if-present

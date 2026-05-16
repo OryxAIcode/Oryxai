@@ -1,0 +1,34 @@
+# Binaries + build output
+bin/
+dist/
+
+# Go
+*.test
+*.prof
+*.pprof
+coverage.out
+coverage.html
+
+# IDE plugin build artifacts
+adapters/ide-plugin-vscode/dist/
+adapters/ide-plugin-vscode/node_modules/
+adapters/ide-plugin-vscode/*.vsix
+adapters/ide-plugin-jetbrains/build/
+adapters/ide-plugin-jetbrains/.gradle/
+
+# OS / editor noise
+.DS_Store
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# Local env / secrets — never committed
+.env
+.env.*
+!.env.example
+
+# Temp + backup files
+*.bak
+*.tmp

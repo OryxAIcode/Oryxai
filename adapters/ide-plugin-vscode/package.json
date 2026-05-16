@@ -1,0 +1,174 @@
+{
+  "name": "codesec",
+  "displayName": "OryxAI — AI Code Security Gateway",
+  "description": "Real-time security scanning for AI-generated code. Catches backdoors, secret leaks, license violations, and prompt injection in Cursor, Copilot, Continue, Cody, Codeium, and Claude Code output.",
+  "version": "0.1.0",
+  "publisher": "oryxai",
+  "license": "Apache-2.0",
+  "engines": {
+    "vscode": "^1.85.0"
+  },
+  "categories": [
+    "Linters",
+    "Programming Languages",
+    "Other"
+  ],
+  "keywords": [
+    "security",
+    "ai",
+    "copilot",
+    "cursor",
+    "claude code",
+    "anthropic",
+    "mcp",
+    "code review",
+    "backdoor detection",
+    "secret scanning",
+    "license compliance"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/OryxAIcode/Oryxai.git",
+    "directory": "adapters/ide-plugin-vscode"
+  },
+  "bugs": {
+    "url": "https://github.com/OryxAIcode/Oryxai/issues"
+  },
+  "homepage": "https://oryxai.dev",
+  "qna": "https://github.com/OryxAIcode/Oryxai/discussions",
+  "activationEvents": [
+    "onStartupFinished"
+  ],
+  "main": "./dist/extension.js",
+  "contributes": {
+    "configuration": {
+      "title": "CodeSec",
+      "properties": {
+        "codesec.backendAddress": {
+          "type": "string",
+          "default": "http://127.0.0.1:8080",
+          "description": "Address of the CodeSec backend (HTTP or Unix socket path)"
+        },
+        "codesec.apiKey": {
+          "type": "string",
+          "default": "",
+          "deprecationMessage": "Deprecated: API key now lives in the OS keychain. On next activate it is migrated automatically. Use 'CodeSec: Start Onboarding' to mint a fresh one.",
+          "description": "DEPRECATED — moved to OS keychain (SecretStorage). Filled briefly during one-shot migration."
+        },
+        "codesec.enabled": {
+          "type": "boolean",
+          "default": true,
+          "description": "Enable or disable CodeSec scanning"
+        },
+        "codesec.scanOnSave": {
+          "type": "boolean",
+          "default": true,
+          "description": "Scan files on save"
+        },
+        "codesec.scanOnPaste": {
+          "type": "boolean",
+          "default": true,
+          "description": "Scan pasted content for threats"
+        },
+        "codesec.scanOnCompletionAccept": {
+          "type": "boolean",
+          "default": true,
+          "description": "Scan after AI completion is accepted"
+        },
+        "codesec.policyProfile": {
+          "type": "string",
+          "default": "default",
+          "description": "Policy profile to use for scanning"
+        },
+        "codesec.showInlineWarnings": {
+          "type": "boolean",
+          "default": true,
+          "description": "Show inline warning decorations"
+        },
+        "codesec.proxyURL": {
+          "type": "string",
+          "default": "http://localhost:8091",
+          "description": "CodeSec LLM proxy base URL — written to ANTHROPIC_BASE_URL in ~/.claude/settings.json when Claude Code protection is enabled."
+        },
+        "codesec.mcpURL": {
+          "type": "string",
+          "default": "http://localhost:8090/sse",
+          "description": "CodeSec MCP server SSE endpoint — registered as `codesec` MCP server in ~/.claude/settings.json."
+        },
+        "codesec.controlURL": {
+          "type": "string",
+          "default": "http://localhost:5173",
+          "description": "CodeSec control plane URL (web console) — used for deep links from the extension."
+        }
+      }
+    },
+    "commands": [
+      {
+        "command": "codesec.scanCurrentFile",
+        "title": "CodeSec: Scan Current File"
+      },
+      {
+        "command": "codesec.scanSelection",
+        "title": "CodeSec: Scan Selection"
+      },
+      {
+        "command": "codesec.showDashboard",
+        "title": "CodeSec: Show Security Dashboard"
+      },
+      {
+        "command": "codesec.toggleEnabled",
+        "title": "CodeSec: Toggle On/Off"
+      },
+      {
+        "command": "codesec.enableClaudeCode",
+        "title": "CodeSec: Enable Claude Code Protection",
+        "category": "CodeSec"
+      },
+      {
+        "command": "codesec.disableClaudeCode",
+        "title": "CodeSec: Disable Claude Code Protection",
+        "category": "CodeSec"
+      },
+      {
+        "command": "codesec.diagnoseClaudeCode",
+        "title": "CodeSec: Diagnose Claude Code Integration",
+        "category": "CodeSec"
+      },
+      {
+        "command": "codesec.startOnboarding",
+        "title": "CodeSec: Start Onboarding (connect editor)",
+        "category": "CodeSec"
+      },
+      {
+        "command": "codesec.signOut",
+        "title": "CodeSec: Sign Out (forget API key)",
+        "category": "CodeSec"
+      }
+    ]
+  },
+  "scripts": {
+    "build": "esbuild src/extension.ts --bundle --outfile=dist/extension.js --external:vscode --format=cjs --platform=node --target=node18",
+    "compile": "tsc --noEmit && npm run build",
+    "watch": "npm run build -- --watch",
+    "package": "vsce package",
+    "lint": "tsc --noEmit",
+    "test": "jest --passWithNoTests"
+  },
+  "devDependencies": {
+    "@types/jest": "^29.5.12",
+    "@types/node": "^20.11.0",
+    "@types/vscode": "^1.85.0",
+    "esbuild": "^0.21.0",
+    "jest": "^29.7.0",
+    "ts-jest": "^29.1.2",
+    "typescript": "^5.4.0"
+  },
+  "jest": {
+    "preset": "ts-jest",
+    "testEnvironment": "node",
+    "testMatch": ["<rootDir>/src/**/*.test.ts"],
+    "moduleNameMapper": {
+      "^vscode$": "<rootDir>/test/mocks/vscode.ts"
+    }
+  }
+}
