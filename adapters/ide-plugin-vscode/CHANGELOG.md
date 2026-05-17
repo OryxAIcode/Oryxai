@@ -3,7 +3,7 @@
 All notable changes to the CodeSec VS Code extension are recorded here. The
 format roughly follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
-## [0.1.0] — Unreleased
+## [0.1.0] — 2026-05-17
 
 First public preview. Pairs with control plane + engine ≥ `dev` (`docker
 compose up --build` on the [codesec repo](https://github.com/codesec-io/codesec)).

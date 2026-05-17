@@ -31,24 +31,24 @@ class ScanFileAction : AnAction() {
 
                 ApplicationManager.getApplication().invokeLater {
                     val msg = if (result.findings.isEmpty()) {
-                        "Dosya temiz — güvenlik sorunu bulunamadı."
+                        "No issues found — no security issues detected."
                     } else {
                         buildString {
-                            appendLine("${result.findings.size} bulgu:")
+                            appendLine("${result.findings.size} finding(s):")
                             for (f in result.findings) {
                                 appendLine("  [${f.severity}] ${f.rule_id}: ${f.message}")
                             }
                         }
                     }
-                    com.intellij.openapi.ui.Messages.showInfoMessage(project, msg, "CodeSec Tarama Sonucu")
+                    com.intellij.openapi.ui.Messages.showInfoMessage(project, msg, "OryxAI Scan Result")
                 }
             } catch (ex: Exception) {
-                widget?.setError(ex.message ?: "bilinmeyen hata")
+                widget?.setError(ex.message ?: "unknown error")
                 ApplicationManager.getApplication().invokeLater {
                     com.intellij.openapi.ui.Messages.showErrorDialog(
                         project,
-                        "CodeSec backend'e bağlanılamadı: ${ex.message}",
-                        "CodeSec Hata"
+                        "Could not reach OryxAI backend: ${ex.message}",
+                        "OryxAI Error"
                     )
                 }
             }

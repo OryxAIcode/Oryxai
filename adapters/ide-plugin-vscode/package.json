@@ -8,6 +8,7 @@
   "engines": {
     "vscode": "^1.85.0"
   },
+  "icon": "assets/icon.png",
   "categories": [
     "Linters",
     "Programming Languages",
@@ -46,8 +47,8 @@
       "properties": {
         "codesec.backendAddress": {
           "type": "string",
-          "default": "http://127.0.0.1:8080",
-          "description": "Address of the CodeSec backend (HTTP or Unix socket path)"
+          "default": "https://api.oryxai.dev",
+          "description": "Address of the OryxAI backend. Self-hosted users: set to http://127.0.0.1:8080"
         },
         "codesec.apiKey": {
           "type": "string",
@@ -87,18 +88,18 @@
         },
         "codesec.proxyURL": {
           "type": "string",
-          "default": "http://localhost:8091",
-          "description": "CodeSec LLM proxy base URL — written to ANTHROPIC_BASE_URL in ~/.claude/settings.json when Claude Code protection is enabled."
+          "default": "https://proxy.oryxai.dev",
+          "description": "OryxAI LLM proxy base URL — written to ANTHROPIC_BASE_URL in ~/.claude/settings.json when Claude Code protection is enabled. Self-hosted: http://localhost:8091"
         },
         "codesec.mcpURL": {
           "type": "string",
-          "default": "http://localhost:8090/sse",
-          "description": "CodeSec MCP server SSE endpoint — registered as `codesec` MCP server in ~/.claude/settings.json."
+          "default": "https://mcp.oryxai.dev/sse",
+          "description": "OryxAI MCP server SSE endpoint — registered as `codesec` MCP server in ~/.claude/settings.json. Self-hosted: http://localhost:8090/sse"
         },
         "codesec.controlURL": {
           "type": "string",
-          "default": "http://localhost:5173",
-          "description": "CodeSec control plane URL (web console) — used for deep links from the extension."
+          "default": "https://oryxai.dev",
+          "description": "OryxAI web console URL — used for deep links from the extension. Self-hosted: http://localhost:5173"
         }
       }
     },
@@ -158,6 +159,7 @@
     "@types/jest": "^29.5.12",
     "@types/node": "^20.11.0",
     "@types/vscode": "^1.85.0",
+    "@vscode/vsce": "^3.2.0",
     "esbuild": "^0.21.0",
     "jest": "^29.7.0",
     "ts-jest": "^29.1.2",

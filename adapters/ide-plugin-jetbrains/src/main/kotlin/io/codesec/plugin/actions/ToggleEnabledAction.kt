@@ -10,11 +10,11 @@ class ToggleEnabledAction : AnAction() {
         val state = CodeSecSettings.getInstance().state
         state.enabled = !state.enabled
 
-        val status = if (state.enabled) "aktif" else "devre dışı"
+        val status = if (state.enabled) "enabled" else "disabled"
         com.intellij.notification.NotificationGroupManager.getInstance()
             .getNotificationGroup("CodeSec Notifications")
             .createNotification(
-                "CodeSec $status",
+                "OryxAI $status",
                 "",
                 if (state.enabled) com.intellij.notification.NotificationType.INFORMATION
                 else com.intellij.notification.NotificationType.WARNING
@@ -24,6 +24,6 @@ class ToggleEnabledAction : AnAction() {
 
     override fun update(e: AnActionEvent) {
         val enabled = CodeSecSettings.getInstance().state.enabled
-        e.presentation.text = if (enabled) "CodeSec'i Devre Dışı Bırak" else "CodeSec'i Aktif Et"
+        e.presentation.text = if (enabled) "Disable OryxAI" else "Enable OryxAI"
     }
 }

@@ -18,20 +18,21 @@ import com.intellij.openapi.components.Storage
 class CodeSecSettings : PersistentStateComponent<CodeSecSettings.State> {
 
     data class State(
-        // Engine endpoint — scan / health.
-        var backendAddress: String = "http://127.0.0.1:8080",
+        // Engine endpoint — scan / health. Self-hosted: http://127.0.0.1:8080
+        var backendAddress: String = "https://api.oryxai.dev",
 
-        // CodeSec proxy endpoint — written into ~/.claude/settings.json
+        // OryxAI proxy endpoint — written into ~/.claude/settings.json
         // as ANTHROPIC_BASE_URL when Claude Code protection is enabled.
-        var proxyURL: String = "http://localhost:8091",
+        // Self-hosted: http://localhost:8091
+        var proxyURL: String = "https://proxy.oryxai.dev",
 
         // MCP SSE endpoint — registered as the `codesec` MCP server in
-        // ~/.claude/settings.json.
-        var mcpURL: String = "http://localhost:8090/sse",
+        // ~/.claude/settings.json. Self-hosted: http://localhost:8090/sse
+        var mcpURL: String = "https://mcp.oryxai.dev/sse",
 
         // Web console — used for deep links from the IDE (onboarding,
-        // "open in browser" buttons).
-        var controlURL: String = "http://localhost:5173",
+        // "open in browser" buttons). Self-hosted: http://localhost:5173
+        var controlURL: String = "https://oryxai.dev",
 
         var enabled: Boolean = true,
         var scanOnSave: Boolean = true,

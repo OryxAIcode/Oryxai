@@ -27,7 +27,7 @@ class CodeSecStatusBarWidget(private val project: Project) : StatusBarWidget, St
     private var text = "$(shield) CodeSec"
 
     @Volatile
-    private var tooltip = "CodeSec: başlatılıyor…"
+    private var tooltip = "CodeSec: starting…"
 
     @Volatile
     private var connected = false
@@ -60,7 +60,7 @@ class CodeSecStatusBarWidget(private val project: Project) : StatusBarWidget, St
     override fun getAlignment(): Float = 0f
 
     override fun getClickConsumer(): Consumer<MouseEvent>? = Consumer {
-        // no-op, gelecekte popup menü
+        // future: popup menu
     }
 
     fun updateScanResult(result: ScanResult) {
@@ -68,23 +68,23 @@ class CodeSecStatusBarWidget(private val project: Project) : StatusBarWidget, St
         val warnings = result.findings.count { it.action == "warn" || it.action == "flag" }
 
         text = when {
-            blocked > 0 -> "⛔ CodeSec: $blocked engellendi"
-            warnings > 0 -> "⚠ CodeSec: $warnings uyarı"
-            else -> "✅ CodeSec: temiz"
+            blocked > 0 -> "⛔ OryxAI: $blocked blocked"
+            warnings > 0 -> "⚠ OryxAI: $warnings warning(s)"
+            else -> "✅ OryxAI: clean"
         }
-        tooltip = "Son tarama: ${result.scan_time_ms}ms, karar: ${result.decision}"
+        tooltip = "Last scan: ${result.scan_time_ms}ms, decision: ${result.decision}"
         statusBar?.updateWidget(ID)
     }
 
     fun setScanning() {
-        text = "⏳ CodeSec: tarıyor…"
-        tooltip = "Dosya taranıyor"
+        text = "⏳ OryxAI: scanning…"
+        tooltip = "Scanning file"
         statusBar?.updateWidget(ID)
     }
 
     fun setError(msg: String) {
-        text = "❌ CodeSec"
-        tooltip = "Hata: $msg"
+        text = "❌ OryxAI"
+        tooltip = "Error: $msg"
         connected = false
         statusBar?.updateWidget(ID)
     }
@@ -93,14 +93,14 @@ class CodeSecStatusBarWidget(private val project: Project) : StatusBarWidget, St
         try {
             val h = client.healthCheck()
             connected = true
-            if (text.startsWith("❌") || text.contains("başlatılıyor")) {
-                text = "✅ CodeSec v${h.version}"
-                tooltip = "Bağlı — uptime ${h.uptime_seconds}s"
+            if (text.startsWith("❌") || text.contains("starting")) {
+                text = "✅ OryxAI v${h.version}"
+                tooltip = "Connected — uptime ${h.uptime_seconds}s"
                 statusBar?.updateWidget(ID)
             }
         } catch (e: Exception) {
             if (connected) {
-                setError(e.message ?: "bilinmeyen hata")
+                setError(e.message ?: "unknown error")
             }
         }
     }

@@ -1,0 +1,16 @@
+# Source & dev-only assets — strip from the published .vsix so the
+# downloaded bundle stays small (esbuild already concatenated src/* into
+# dist/extension.js).
+src/**
+test/**
+node_modules/**
+tsconfig.json
+jest.config*
+**/*.test.ts
+**/*.test.js
+**/*.map
+*.ts
+!dist/**
+
+# Keep README / LICENSE / CHANGELOG / package.json — Marketplace renders
+# them. The .vsix tool includes them by default.

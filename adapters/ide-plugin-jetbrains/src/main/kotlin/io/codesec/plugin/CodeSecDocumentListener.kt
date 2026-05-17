@@ -66,7 +66,7 @@ class CodeSecDocumentListener : BulkAwareDocumentListener.Simple {
                 }
             } catch (e: Exception) {
                 logger.warn("CodeSec scan error: ${e.message}")
-                widget?.setError(e.message ?: "bilinmeyen hata")
+                widget?.setError(e.message ?: "unknown error")
             }
         }
     }
@@ -77,8 +77,8 @@ class CodeSecDocumentListener : BulkAwareDocumentListener.Simple {
         val fileName = filePath.substringAfterLast('/')
 
         val title = when {
-            blocked > 0 -> "⛔ CodeSec: $blocked güvenlik ihlali"
-            warnings > 0 -> "⚠ CodeSec: $warnings uyarı"
+            blocked > 0 -> "⛔ OryxAI: $blocked security violation(s) blocked"
+            warnings > 0 -> "⚠ OryxAI: $warnings warning(s)"
             else -> return
         }
 
@@ -87,7 +87,7 @@ class CodeSecDocumentListener : BulkAwareDocumentListener.Simple {
                 appendLine("• [${f.severity}] ${f.rule_id}: ${f.message}")
             }
             if (result.findings.size > 5) {
-                appendLine("… ve ${result.findings.size - 5} daha")
+                appendLine("… and ${result.findings.size - 5} more")
             }
         }
 
