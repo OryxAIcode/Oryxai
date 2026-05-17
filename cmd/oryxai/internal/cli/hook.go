@@ -12,56 +12,114 @@ import (
 
 	"github.com/OryxAIcode/Oryxai/cmd/oryxai/internal/buffer"
 	"github.com/OryxAIcode/Oryxai/cmd/oryxai/internal/client"
+	"github.com/OryxAIcode/Oryxai/cmd/oryxai/internal/tokensave"
 )
 
 // Hook handles `oryxai hook --agent <name>`.
 //
-// Read a tool-call envelope from stdin, convert to our canonical
-// FeedEvent, fire-and-forget POST to /feed/ingest, write
-// {"decision":"allow"} (or the agent's equivalent) to stdout, exit.
+// Read a tool-call envelope from stdin, fire-and-forget event to the
+// dashboard buffer, optionally rewrite the command to reduce token
+// waste, and write the agent-specific allow/approve response.
 //
-// Hard constraint: hook must return within ~5 ms of being spawned.
-// The POST runs in a goroutine with a short timeout; we don't wait
-// for it. Worst case, network is slow → the event is dropped.
-// Defensive failure mode is acceptable here because hooks fire
-// on every tool call and the cost of being slow is far worse than
-// dropping an occasional observation.
+// Hard constraint: hook must return within ~5 ms.
+// Rewrite logic is pure in-memory (no I/O) so it never adds latency.
 func Hook(args []string) int {
 	fs := flagSet("hook")
 	agent := fs.String("agent", "", "Agent envelope to parse: claude-code | cursor | gemini-cli | opencode | openclaw")
 	if err := fs.Parse(args); err != nil {
-		// Even on bad flags, never block the agent. Print allow.
-		writeAllowFor("unknown")
+		writeAllowFor("unknown", "")
 		return 0
 	}
 	if strings.TrimSpace(*agent) == "" {
-		writeAllowFor("unknown")
+		writeAllowFor("unknown", "")
 		return 0
 	}
 
-	// Read stdin with a generous deadline. If it stalls, give up.
 	body, err := readStdinBounded(64 * 1024)
 	if err != nil {
-		// Don't block the agent on read errors.
-		writeAllowFor(*agent)
+		writeAllowFor(*agent, "")
 		return 0
 	}
 
-	// Decode envelope by agent name. Failure → still allow.
 	evt, ok := decodeAgentEnvelope(*agent, body)
 	if !ok {
-		writeAllowFor(*agent)
+		writeAllowFor(*agent, "")
 		return 0
 	}
 
-	// Append to local buffer instead of POSTing synchronously. Hook
-	// returns in <5ms because the only I/O is a small append to a
-	// JSON-lines file. Buffer is drained by `oryxai verify`,
-	// `oryxai status`, or the next `oryxai install` invocation.
 	_ = buffer.Append(evt)
 
-	writeAllowFor(*agent)
+	// Rewrite noisy commands before they run — reduces tool result size
+	// in the next turn and cuts context token usage.
+	rewrittenCmd := tryRewrite(*agent, body)
+
+	writeAllowFor(*agent, rewrittenCmd)
 	return 0
+}
+
+// tryRewrite extracts the bash command from the tool envelope, applies
+// the rewrite rule table, and returns the modified command string.
+// Returns "" when no rewrite is needed or the agent doesn't support
+// tool_input override (only claude-code and cursor support it today).
+func tryRewrite(agent string, body []byte) string {
+	switch agent {
+	case "claude-code":
+		var p struct {
+			ToolName  string         `json:"tool_name"`
+			ToolInput map[string]any `json:"tool_input"`
+		}
+		if err := json.Unmarshal(body, &p); err != nil {
+			return ""
+		}
+		if !tokensave.IsBashTool(p.ToolName) {
+			return ""
+		}
+		cmd, _ := p.ToolInput["command"].(string)
+		rewritten, changed := tokensave.Rewrite(cmd)
+		if !changed {
+			return ""
+		}
+		return rewritten
+
+	case "cursor":
+		var p struct {
+			Tool   string         `json:"tool"`
+			Params map[string]any `json:"params"`
+		}
+		if err := json.Unmarshal(body, &p); err != nil {
+			return ""
+		}
+		if !tokensave.IsBashTool(p.Tool) {
+			return ""
+		}
+		cmd, _ := p.Params["command"].(string)
+		rewritten, changed := tokensave.Rewrite(cmd)
+		if !changed {
+			return ""
+		}
+		return rewritten
+
+	case "gemini-cli":
+		var p struct {
+			Name string         `json:"name"`
+			Args map[string]any `json:"args"`
+		}
+		if err := json.Unmarshal(body, &p); err != nil {
+			return ""
+		}
+		if !tokensave.IsBashTool(p.Name) {
+			return ""
+		}
+		cmd, _ := p.Args["command"].(string)
+		rewritten, changed := tokensave.Rewrite(cmd)
+		if !changed {
+			return ""
+		}
+		return rewritten
+
+	default:
+		return ""
+	}
 }
 
 // unused import compat — kept while we transition from sync POST
@@ -69,14 +127,10 @@ func Hook(args []string) int {
 var _ = (*client.Client)(nil)
 var _ = time.Second
 
-// readStdinBounded reads up to max bytes from os.Stdin, returning what
-// was read. We don't error on EOF — short payloads are fine.
 func readStdinBounded(max int) ([]byte, error) {
 	return io.ReadAll(io.LimitReader(os.Stdin, int64(max)))
 }
 
-// decodeAgentEnvelope converts the agent's native JSON envelope into
-// our canonical FeedEvent. Returns ok=false on any parse failure.
 func decodeAgentEnvelope(agent string, body []byte) (client.FeedEvent, bool) {
 	evt := client.FeedEvent{
 		Agent:   agent,
@@ -138,7 +192,6 @@ func decodeAgentEnvelope(agent string, body []byte) (client.FeedEvent, bool) {
 		evt.ParamsSummary = summarize(tool, params)
 		return evt, true
 	default:
-		// Unknown agent — record as generic hook event.
 		evt.Tool = "unknown"
 		evt.Kind = "hook.other"
 		evt.ParamsSummary = "(unknown agent envelope)"
@@ -146,15 +199,8 @@ func decodeAgentEnvelope(agent string, body []byte) (client.FeedEvent, bool) {
 	}
 }
 
-// classifyTool maps an agent-specific tool name to a coarse
-// canonical bucket so the feed has consistent kind values across
-// agents (Claude Code says "Bash", Cursor says "execute_command" —
-// both classify to "bash").
 func classifyTool(name string) string {
 	n := strings.ToLower(name)
-	// Order matters: "web" must be checked before "search" so
-	// WebSearch classifies as web, not search. Same for "edit_file"
-	// vs "read_file" — both contain neither's bucket marker.
 	switch {
 	case strings.Contains(n, "web"), strings.Contains(n, "fetch"),
 		strings.Contains(n, "http"):
@@ -174,10 +220,6 @@ func classifyTool(name string) string {
 	}
 }
 
-// summarize builds a short, non-secret string describing the tool's
-// input. Keep under 200 chars — this is rendered in the dashboard
-// audit row. We deliberately do NOT include file contents, command
-// stdin, or password-shaped fields.
 func summarize(tool string, params map[string]any) string {
 	if params == nil {
 		return ""
@@ -199,7 +241,6 @@ func summarize(tool string, params map[string]any) string {
 			return "reading " + clamp(path, 180)
 		}
 	}
-	// Fallback: list keys only.
 	keys := make([]string, 0, len(params))
 	for k := range params {
 		keys = append(keys, k)
@@ -214,18 +255,37 @@ func clamp(s string, n int) string {
 	return s[:n-1] + "…"
 }
 
-// writeAllowFor emits the per-agent "allow" JSON to stdout. Different
-// agents expect different shapes; we send the canonical "approve"
-// form for Claude Code and a generic empty object otherwise.
-func writeAllowFor(agent string) {
+// writeAllowFor emits the per-agent allow/approve JSON to stdout.
+// When rewrittenCmd is non-empty and the agent supports tool_input
+// override, the modified command is included so the agent runs
+// the quieter version instead of the original.
+func writeAllowFor(agent, rewrittenCmd string) {
 	switch agent {
 	case "claude-code":
-		fmt.Print(`{"decision":"approve"}`)
+		if rewrittenCmd != "" {
+			data, _ := json.Marshal(map[string]any{
+				"decision": "approve",
+				"tool_input": map[string]any{
+					"command": rewrittenCmd,
+				},
+			})
+			os.Stdout.Write(data)
+		} else {
+			fmt.Print(`{"decision":"approve"}`)
+		}
 	case "cursor":
-		fmt.Print(`{"decision":"allow"}`)
+		if rewrittenCmd != "" {
+			data, _ := json.Marshal(map[string]any{
+				"decision": "allow",
+				"params": map[string]any{
+					"command": rewrittenCmd,
+				},
+			})
+			os.Stdout.Write(data)
+		} else {
+			fmt.Print(`{"decision":"allow"}`)
+		}
 	default:
-		// Empty object — most hook protocols treat this as "no
-		// decision recorded, proceed normally."
 		fmt.Print("{}")
 	}
 }
